@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import json
+from datetime import datetime
 
 
 # Global variables
@@ -116,7 +116,8 @@ def check_printers(output_file="printer_status.json", max_workers=10):
     results = {
         "active_printers": [],
         "disconnected_printers": [],
-        "summary": {}
+        "summary": {},
+        "last_update": datetime.utcnow().isoformat() + "Z"
     }
     
     print(f"\n🖨️ Checking {len(ip_info)} printers in parallel ({max_workers} workers)...")
@@ -135,13 +136,31 @@ def check_printers(output_file="printer_status.json", max_workers=10):
         """Check single printer and store result."""
         try:
             result = check_ink(ip)
+            location, printer_id, model, sheet_name = ip_info.get(ip, ("Unknown", "Unknown", "Unknown", "Unknown"))
+            
             with results_lock:
                 if result:
                     if "Connection error" in result:
-                        results["disconnected_printers"].append(result)
+                        results["disconnected_printers"].append({
+                            "location": location,
+                            "id": printer_id,
+                            "ip": ip,
+                            "model": model,
+                            "status": "disconnected",
+                            "error": "Printer not responding"
+                        })
                         status = "⚠️  Disconnected"
                     else:
-                        results["active_printers"].append(result)
+                        # Parse low ink info from result
+                        low_inks = [line.strip() for line in result.split('\n') if '⚠️' in line or '❌' in line]
+                        results["active_printers"].append({
+                            "location": location,
+                            "id": printer_id,
+                            "ip": ip,
+                            "model": model,
+                            "status": "active",
+                            "low_inks": low_inks
+                        })
                         status = "✅ OK (Low ink detected)"
                 else:
                     status = "✅ OK"
@@ -151,12 +170,14 @@ def check_printers(output_file="printer_status.json", max_workers=10):
                 
                 # Save results incrementally every 5 printers
                 if checked_count[0] % 5 == 0 or checked_count[0] == len(ip_info):
+                    results["last_update"] = datetime.utcnow().isoformat() + "Z"
                     save_results_to_file()
         except Exception as e:
             with results_lock:
                 checked_count[0] += 1
                 print(f"[{checked_count[0]:02d}/{len(ip_info)}] {ip:18} - ❌ Error: {str(e)[:40]}")
                 if checked_count[0] % 5 == 0 or checked_count[0] == len(ip_info):
+                    results["last_update"] = datetime.utcnow().isoformat() + "Z"
                     save_results_to_file()
     
     # Use ThreadPoolExecutor for parallel execution
@@ -168,16 +189,19 @@ def check_printers(output_file="printer_status.json", max_workers=10):
     results["summary"] = {
         "total_printers": len(ip_info),
         "active": len(results["active_printers"]),
-        "disconnected": len(results["disconnected_printers"])
+        "disconnected": len(results["disconnected_printers"]),
+        "scan_duration_seconds": None  # Can be filled if needed
     }
     
-    # Final save with summary
+    # Final save with summary and timestamp
+    results["last_update"] = datetime.utcnow().isoformat() + "Z"
     save_results_to_file()
     
     print("\n" + "=" * 60)
     print(f"✅ Scan complete!")
     print(f"📊 Summary: {results['summary']['active']} with low ink, {results['summary']['disconnected']} disconnected")
     print(f"💾 Results saved to {output_file}")
+    print(f"⏰ Timestamp: {results['last_update']}")
     print("=" * 60)
     return results
 
